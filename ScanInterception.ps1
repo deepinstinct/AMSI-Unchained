@@ -1,6 +1,6 @@
 Write-Host "AMSI providers' scan interception"
 Write-Host "-- Maor Korkos (@maorkor)"
-Write-Host ""
+Write-Host "-- 32bit implemetation"
 
 $APIs = @"
 using System;
