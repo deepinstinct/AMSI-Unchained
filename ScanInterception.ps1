@@ -5,7 +5,6 @@ Write-Host "-- 32bit implemetation"
 $APIs = @"
 using System;
 using System.Runtime.InteropServices;
-
 public class APIs {
   [DllImport("kernel32")]
   public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
